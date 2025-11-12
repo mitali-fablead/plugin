@@ -4,41 +4,13 @@
  * Plugin URI:  https://example.com
  * Description: Manage expiry/refresh rules for posts, pages and custom post types. Archive, redirect, replace or delete content automatically and notify authors.
  * Version:     0.1.0
- * Author:      Fablead (starter)
+ * Author:      Mitali (starter)
  * Text Domain: content-expiry-freshness
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
-
-add_action('admin_enqueue_scripts', function($hook_suffix) {
-
-    // Get base URL and path
-    $plugin_url  = plugins_url('', __FILE__);
-    $plugin_path = plugin_dir_path(__FILE__);
-
-    // Enqueue CSS
-    if (file_exists($plugin_path . 'assets/admin.css')) {
-        wp_enqueue_style(
-            'cefm-admin-style',
-            $plugin_url . '/assets/admin.css',
-            [],
-            filemtime($plugin_path . 'assets/admin.css')
-        );
-    }
-
-    // Enqueue JS
-    if (file_exists($plugin_path . 'assets/admin.js')) {
-        wp_enqueue_script(
-            'cefm-admin-script',
-            $plugin_url . '/assets/admin.js',
-            ['jquery'],
-            filemtime($plugin_path . 'assets/admin.js'),
-            true
-        );
-    }
-});
 
 
 
@@ -96,38 +68,37 @@ function render_expiry_box($post) {
 
 
 // Save meta box data
-add_action('save_post', function($post_id) {
+add_action('save_post', function($post_id){
     if (!isset($_POST['expiry_nonce']) || !wp_verify_nonce($_POST['expiry_nonce'], 'save_expiry_meta')) return;
     if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
     if (!current_user_can('edit_post', $post_id)) return;
 
-    // Handle disable action
-    if (isset($_POST['expiry_action']) && $_POST['expiry_action'] === 'disable') {
-        delete_post_meta($post_id, '_expiry_date');
-        delete_post_meta($post_id, '_expiry_action');
-        delete_post_meta($post_id, '_expiry_redirect');
-        delete_post_meta($post_id, '_expiry_message');
-        delete_post_meta($post_id, '_active_redirect');
-        delete_post_meta($post_id, '_replaced_content');
-        return;
-    }
-
-    // Normalize and save expiry date
-    $new_expiry = !empty($_POST['expiry_date']) ? str_replace('T', ' ', sanitize_text_field($_POST['expiry_date'])) : '';
     $old_expiry = get_post_meta($post_id, '_expiry_date', true);
 
-    if ($new_expiry) {
-        update_post_meta($post_id, '_expiry_date', $new_expiry);
 
-        // Reset notification flags if expiry date changed
-        if ($old_expiry !== $new_expiry) {
-            delete_post_meta($post_id, '_expiry_notified_7');
-            delete_post_meta($post_id, '_expiry_notified_1');
-            delete_post_meta($post_id, '_expiry_notified_0');
-        }
 
-        // Clear active states if in future
-        if (strtotime($new_expiry) > current_time('timestamp')) {
+    // If "Disable" is selected, clear all expiry-related meta
+if (isset($_POST['expiry_action']) && $_POST['expiry_action'] === 'disable') {
+    delete_post_meta($post_id, '_expiry_date');
+    delete_post_meta($post_id, '_expiry_action');
+    delete_post_meta($post_id, '_expiry_redirect');
+    delete_post_meta($post_id, '_expiry_message');
+    delete_post_meta($post_id, '_active_redirect');
+    delete_post_meta($post_id, '_replaced_content');
+    return;
+}
+
+
+
+
+
+    if (!empty($_POST['expiry_date'])) {
+        // Normalize datetime format (remove "T")
+        $datetime = str_replace('T', ' ', sanitize_text_field($_POST['expiry_date']));
+        update_post_meta($post_id, '_expiry_date', $datetime);
+
+       
+        if (strtotime($datetime) > current_time('timestamp')) {
             delete_post_meta($post_id, '_active_redirect');
             delete_post_meta($post_id, '_replaced_content');
         }
@@ -137,7 +108,6 @@ add_action('save_post', function($post_id) {
     update_post_meta($post_id, '_expiry_redirect', esc_url_raw($_POST['expiry_redirect']));
     update_post_meta($post_id, '_expiry_message', sanitize_textarea_field($_POST['expiry_message']));
 });
-
 
 
 
@@ -296,20 +266,43 @@ add_action('admin_post_cefm_refresh_expiry', function() {
 
 
 function render_content_expiry_overview() {
-    
     if (!current_user_can('manage_options')) {
         return;
     }
 
-    if (isset($_GET['refreshed'])) {
-        echo '<div class="notice notice-success is-dismissible"><p>Expiry date refreshed successfully!</p></div>';
+    // Handle bulk action
+    if (isset($_POST['bulk_action'], $_POST['selected_posts']) && is_array($_POST['selected_posts'])) {
+        $action = sanitize_text_field($_POST['bulk_action']);
+        $selected_posts = array_map('intval', $_POST['selected_posts']);
+
+        foreach ($selected_posts as $post_id) {
+            if ($action === 'extend_30') {
+                $old_expiry = get_post_meta($post_id, '_expiry_date', true);
+                if ($old_expiry) {
+                    $new_expiry = date('Y-m-d H:i', strtotime("+30 days", strtotime($old_expiry)));
+                    update_post_meta($post_id, '_expiry_date', $new_expiry);
+                }
+            } elseif ($action === 'disable') {
+                delete_post_meta($post_id, '_expiry_date');
+                update_post_meta($post_id, '_expiry_action', 'disable');
+            } elseif ($action === 'draft') {
+                update_post_meta($post_id, '_expiry_action', 'draft');
+            }
+        }
+
+        echo '<div class="notice notice-success is-dismissible"><p>Bulk action applied successfully!</p></div>';
     }
+
+    // Filters
+    $filter_post_type = isset($_GET['filter_post_type']) ? sanitize_text_field($_GET['filter_post_type']) : '';
+    $filter_status = isset($_GET['filter_status']) ? sanitize_text_field($_GET['filter_status']) : '';
 
     $now = current_time('Y-m-d H:i');
     $upcoming = date('Y-m-d H:i', strtotime('+7 days', current_time('timestamp')));
 
-    $posts = get_posts([
-        'post_type' => 'any',
+    // Build query
+    $args = [
+        'post_type' => $filter_post_type ?: 'any',
         'meta_query' => [
             [
                 'key' => '_expiry_date',
@@ -318,20 +311,52 @@ function render_content_expiry_overview() {
         ],
         'numberposts' => -1,
         'post_status' => ['publish', 'private', 'draft', 'pending']
-    ]);
-
-    // ========== Counters for Analytics ==========
-    $counts = [
-        'active' => 0,
-        'expiring' => 0,
-        'expired' => 0,
-        'pending' => 0
     ];
 
+    $posts = get_posts($args);
+
+    // Counters
+    $counts = ['active' => 0, 'expiring' => 0, 'expired' => 0, 'pending' => 0];
+
     echo '<div class="wrap"><h1>🕒 Content Expiry Overview</h1>';
-    echo '<p>View all posts with expiry dates. You can refresh expiry, see status analytics, or view logs.</p>';
+    echo '<p>View all posts with expiry dates. Filter, bulk update, or refresh expiry.</p>';
+
+    // Filter Form
+    echo '<form method="get" action="">';
+    echo '<input type="hidden" name="page" value="content-expiry-overview">';
+
+    // Post Type Filter
+    echo '<select name="filter_post_type">';
+    echo '<option value="">All Post Types</option>';
+    foreach (get_post_types(['public' => true]) as $pt) {
+        echo '<option value="' . esc_attr($pt) . '" ' . selected($filter_post_type, $pt, false) . '>' . esc_html($pt) . '</option>';
+    }
+    echo '</select>';
+
+    // Expiry Status Filter
+    echo '<select name="filter_status">';
+    echo '<option value="">All Statuses</option>';
+    echo '<option value="active" ' . selected($filter_status, 'active', false) . '>Active</option>';
+    echo '<option value="expiring" ' . selected($filter_status, 'expiring', false) . '>Expiring Soon</option>';
+    echo '<option value="expired" ' . selected($filter_status, 'expired', false) . '>Expired</option>';
+    echo '</select>';
+
+    echo ' <button class="button">Filter</button>';
+    echo '</form><br>';
+
+    // Bulk Actions Form
+    echo '<form method="post" action="">';
+    echo '<select name="bulk_action">';
+    echo '<option value="">Bulk Actions</option>';
+    echo '<option value="extend_30">Extend Expiry by 30 Days</option>';
+    echo '<option value="disable">Disable Expiry</option>';
+    echo '<option value="draft">Set Action to Draft</option>';
+    echo '</select> ';
+    echo '<button class="button action">Apply</button>';
+
     echo '<table class="widefat fixed striped">';
     echo '<thead><tr>
+            <th><input type="checkbox" id="select-all"></th>
             <th>Title</th>
             <th>Type</th>
             <th>Expiry Date</th>
@@ -345,65 +370,75 @@ function render_content_expiry_overview() {
         $action = get_post_meta($post->ID, '_expiry_action', true);
         $status_label = '—';
 
-        $action = get_post_meta($post->ID, '_expiry_action', true);
-
-if ($action === 'disable' || empty($expiry)) {
-    $status_label = '<span style="color:gray;">Disabled</span>';
-} elseif ($expiry) {
+        if ($action === 'disable' || empty($expiry)) {
+            $status = 'disabled';
+            $status_label = '<span style="color:gray;">Disabled</span>';
+        } elseif ($expiry) {
             if ($post->post_status === 'pending') {
+                $status = 'pending';
                 $status_label = '<span style="color:blue;">Pending Review</span>';
                 $counts['pending']++;
             } elseif ($expiry <= $now) {
+                $status = 'expired';
                 $status_label = '<span style="color:red;font-weight:bold;">Expired</span>';
                 $counts['expired']++;
             } elseif ($expiry <= $upcoming) {
+                $status = 'expiring';
                 $status_label = '<span style="color:orange;">Expiring Soon</span>';
                 $counts['expiring']++;
             } else {
+                $status = 'active';
                 $status_label = '<span style="color:green;">Active</span>';
                 $counts['active']++;
             }
-
-            // Create secure refresh URL
-            $refresh_url = wp_nonce_url(
-                admin_url("admin-post.php?action=cefm_refresh_expiry&post_id={$post->ID}"),
-                'cefm_refresh_' . $post->ID
-            );
-
-            echo '<tr>
-                <td>' . esc_html(get_the_title($post)) . '</td>
-                <td>' . esc_html($post->post_type) . '</td>
-                <td>' . esc_html($expiry) . '</td>
-                <td>' . esc_html(ucfirst($action)) . '</td>
-                <td>' . $status_label . '</td>
-                <td>
-                    <a href="' . get_edit_post_link($post->ID) . '">Edit</a> | 
-                    <a href="' . esc_url($refresh_url) . '" class="button button-small">🔁 Refresh</a>
-                </td>
-            </tr>';
         }
+
+        // Apply filters
+        if ($filter_status && $filter_status !== $status) continue;
+
+        $refresh_url = wp_nonce_url(
+            admin_url("admin-post.php?action=cefm_refresh_expiry&post_id={$post->ID}"),
+            'cefm_refresh_' . $post->ID
+        );
+
+        echo '<tr>
+            <td><input type="checkbox" name="selected_posts[]" value="' . esc_attr($post->ID) . '"></td>
+            <td>' . esc_html(get_the_title($post)) . '</td>
+            <td>' . esc_html($post->post_type) . '</td>
+            <td>' . esc_html($expiry) . '</td>
+            <td>' . esc_html(ucfirst($action)) . '</td>
+            <td>' . $status_label . '</td>
+            <td>
+                <a href="' . get_edit_post_link($post->ID) . '">Edit</a> | 
+                <a href="' . esc_url($refresh_url) . '" class="button button-small">🔁 Refresh</a>
+            </td>
+        </tr>';
     }
 
-    echo '</tbody></table>';
+    echo '</tbody></table></form>';
 
-    // =======================
+    // Table select-all JS
+    echo "<script>
+        document.getElementById('select-all').addEventListener('click', function(){
+            const checkboxes = document.querySelectorAll('input[name=\"selected_posts[]\"]');
+            for (const cb of checkboxes) { cb.checked = this.checked; }
+        });
+    </script>";
+
     // Analytics Section
-    // =======================
-    echo '<hr><h2> Content Expiry Analytics</h2>';
-    echo '<p>Overall status of content freshness across your site.</p>';
-    echo '<ul class="analytics" style="font-size:16px; line-height:1.2;">';
-    echo '<li><strong class="li_active" >Active:</strong> ' . $counts['active'] . '</li>';
-    echo '<li><strong class="li_expiring_soon" >Expiring Soon:</strong> ' . $counts['expiring'] . '</li>';
-    echo '<li><strong class="li_expired" >Expired:</strong> ' . $counts['expired'] . '</li>';
-    echo '<li><strong class="li_pending_review" >Pending Review:</strong> ' . $counts['pending'] . '</li>';
+    echo '<hr><h2>📊 Content Expiry Analytics</h2>';
+    echo '<p>Overview of content freshness across your site.</p>';
+    echo '<ul style="font-size:16px; line-height:1.6;">';
+    echo '<li><strong style="color:green;">Active:</strong> ' . $counts['active'] . '</li>';
+    echo '<li><strong style="color:orange;">Expiring Soon:</strong> ' . $counts['expiring'] . '</li>';
+    echo '<li><strong style="color:red;">Expired:</strong> ' . $counts['expired'] . '</li>';
+    echo '<li><strong style="color:blue;">Pending Review:</strong> ' . $counts['pending'] . '</li>';
     echo '</ul>';
 
-    // =======================
-    // Google Chart (Pie Chart)
-    // =======================
+    // Google Chart
     ?>
     <script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
-    <script type="text/javascript">
+    <script>
       google.charts.load('current', {'packages':['corechart']});
       google.charts.setOnLoadCallback(drawChart);
       function drawChart() {
@@ -414,98 +449,19 @@ if ($action === 'disable' || empty($expiry)) {
           ['Expired', <?php echo $counts['expired']; ?>],
           ['Pending Review', <?php echo $counts['pending']; ?>]
         ]);
-
         var options = {
           title: 'Content Expiry Status Overview',
           pieHole: 0.4,
           colors: ['#4CAF50', '#FF9800', '#F44336', '#2196F3']
         };
-
         var chart = new google.visualization.PieChart(document.getElementById('expiry_chart'));
         chart.draw(data, options);
       }
     </script>
     <div id="expiry_chart" style="width: 600px; height: 350px;"></div>
     <?php
-
     echo '</div>'; // End wrap
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// // 🔹 Handle bulk actions from Content Expiry Overview table
-// add_action('admin_post_cefm_bulk_action', function() {
-//     if (!current_user_can('manage_options')) wp_die('Unauthorized.');
-//     if (!isset($_POST['cefm_bulk_nonce']) || !wp_verify_nonce($_POST['cefm_bulk_nonce'], 'cefm_bulk_action')) wp_die('Invalid nonce.');
-
-//     $action = sanitize_text_field($_POST['bulk_action'] ?? '');
-//     $posts = isset($_POST['selected_posts']) ? array_map('intval', $_POST['selected_posts']) : [];
-
-//     if (empty($action) || empty($posts)) {
-//         wp_redirect(admin_url('admin.php?page=content-expiry-overview&bulk=none'));
-//         exit;
-//     }
-
-//     foreach ($posts as $post_id) {
-//         $expiry = get_post_meta($post_id, '_expiry_date', true);
-//         if (!$expiry) continue;
-
-//         switch ($action) {
-//             case 'extend_30':
-//                 $new = date('Y-m-d H:i', strtotime('+30 days', strtotime($expiry)));
-//                 update_post_meta($post_id, '_expiry_date', $new);
-//                 break;
-//             case 'extend_90':
-//                 $new = date('Y-m-d H:i', strtotime('+90 days', strtotime($expiry)));
-//                 update_post_meta($post_id, '_expiry_date', $new);
-//                 break;
-//             case 'change_action_draft':
-//                 update_post_meta($post_id, '_expiry_action', 'draft');
-//                 break;
-//             case 'change_action_replace':
-//                 update_post_meta($post_id, '_expiry_action', 'replace');
-//                 break;
-//             case 'disable_expiry':
-//                 delete_post_meta($post_id, '_expiry_date');
-//                 update_post_meta($post_id, '_expiry_action', 'disable');
-//                 break;
-//         }
-//     }
-
-//     wp_redirect(admin_url('admin.php?page=content-expiry-overview&bulk=success'));
-//     exit;
-// });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -546,7 +502,7 @@ add_action('init', function() {
 });
 
 
- add_action('notify_expiring_posts', 'cefm_notify_admin_and_authors_about_expiry');
+add_action('notify_expiring_posts', 'cefm_notify_admin_and_authors_about_expiry');
 
 // function cefm_notify_admin_and_authors_about_expiry() {
 //     $now = current_time('timestamp');
@@ -612,12 +568,10 @@ add_action('init', function() {
 
 
 function cefm_notify_admin_and_authors_about_expiry() {
-    
     $now = current_time('timestamp');
     $admin_email = get_option('admin_email');
 
     // Get all posts that have an expiry date set
-
     $posts = get_posts([
         'post_type'   => 'any',
         'post_status' => ['publish', 'private'],
@@ -643,18 +597,11 @@ if ($expiry_action === 'disable') {
         $expiry_date = get_post_meta($post->ID, '_expiry_date', true);
         if (empty($expiry_date)) continue;
 
-
-
         $expiry_time = strtotime($expiry_date);
-        // $expiry_time = strtotime(get_date_from_gmt(gmdate('Y-m-d H:i:s', strtotime($expiry_date))));
-
         $days_left = floor(($expiry_time - $now) / DAY_IN_SECONDS);
 
-    
-
         // Only send notifications for 7 days before and on expiry day
-       
-if ($days_left >= 0 && $days_left <= 7) {
+        if (in_array($days_left, [7, 0], true)) {
 
             $flag_key = '_expiry_notified_' . $days_left;
 
@@ -669,10 +616,8 @@ if ($days_left >= 0 && $days_left <= 7) {
                 $post->post_title,
                 $days_left,
                 ($days_left === 1 ? '' : 's')
-                 //     print_r($days_left);
-    // die;
             );
-   
+
             $message = "Hi Admin,\n\n";
             $message .= "The following post is nearing expiry:\n";
             $message .= "------------------------------------\n";
@@ -684,8 +629,6 @@ if ($days_left >= 0 && $days_left <= 7) {
             $message .= "------------------------------------\n";
             $message .= "Regards,\nContent Expiry & Freshness Manager";
 
-            // print_r($message);
-            // die;
             // Send to admin
             $headers = ['Content-Type: text/plain; charset=UTF-8'];
             wp_mail($admin_email, $subject, $message, $headers);
@@ -715,7 +658,7 @@ add_action('wp', function() {
     }
 });
 
- add_action('cefm_check_expiry_posts', 'cefm_notify_admin_and_authors_about_expiry');
+add_action('cefm_check_expiry_posts', 'cefm_notify_admin_and_authors_about_expiry');
 
 // Manual test trigger (for debugging)
 add_action('admin_init', function() {
