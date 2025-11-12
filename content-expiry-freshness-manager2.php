@@ -4,13 +4,41 @@
  * Plugin URI:  https://example.com
  * Description: Manage expiry/refresh rules for posts, pages and custom post types. Archive, redirect, replace or delete content automatically and notify authors.
  * Version:     0.1.0
- * Author:      Mitali (starter)
+ * Author:      Fablead (starter)
  * Text Domain: content-expiry-freshness
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
+
+add_action('admin_enqueue_scripts', function($hook_suffix) {
+
+    // Get base URL and path
+    $plugin_url  = plugins_url('', __FILE__);
+    $plugin_path = plugin_dir_path(__FILE__);
+
+    // Enqueue CSS
+    if (file_exists($plugin_path . 'assets/admin.css')) {
+        wp_enqueue_style(
+            'cefm-admin-style',
+            $plugin_url . '/assets/admin.css',
+            [],
+            filemtime($plugin_path . 'assets/admin.css')
+        );
+    }
+
+    // Enqueue JS
+    if (file_exists($plugin_path . 'assets/admin.js')) {
+        wp_enqueue_script(
+            'cefm-admin-script',
+            $plugin_url . '/assets/admin.js',
+            ['jquery'],
+            filemtime($plugin_path . 'assets/admin.js'),
+            true
+        );
+    }
+});
 
 
 
@@ -363,11 +391,11 @@ if ($action === 'disable' || empty($expiry)) {
     // =======================
     echo '<hr><h2> Content Expiry Analytics</h2>';
     echo '<p>Overall status of content freshness across your site.</p>';
-    echo '<ul style="font-size:16px; line-height:1.2;">';
-    echo '<li><strong style="color:green;">Active:</strong> ' . $counts['active'] . '</li>';
-    echo '<li><strong style="color:orange;">Expiring Soon:</strong> ' . $counts['expiring'] . '</li>';
-    echo '<li><strong style="color:red;">Expired:</strong> ' . $counts['expired'] . '</li>';
-    echo '<li><strong style="color:blue;">Pending Review:</strong> ' . $counts['pending'] . '</li>';
+    echo '<ul class="analytics" style="font-size:16px; line-height:1.2;">';
+    echo '<li><strong class="li_active" >Active:</strong> ' . $counts['active'] . '</li>';
+    echo '<li><strong class="li_expiring_soon" >Expiring Soon:</strong> ' . $counts['expiring'] . '</li>';
+    echo '<li><strong class="li_expired" >Expired:</strong> ' . $counts['expired'] . '</li>';
+    echo '<li><strong class="li_pending_review" >Pending Review:</strong> ' . $counts['pending'] . '</li>';
     echo '</ul>';
 
     // =======================
@@ -417,6 +445,83 @@ if ($action === 'disable' || empty($expiry)) {
 
 
 
+
+// // 🔹 Handle bulk actions from Content Expiry Overview table
+// add_action('admin_post_cefm_bulk_action', function() {
+//     if (!current_user_can('manage_options')) wp_die('Unauthorized.');
+//     if (!isset($_POST['cefm_bulk_nonce']) || !wp_verify_nonce($_POST['cefm_bulk_nonce'], 'cefm_bulk_action')) wp_die('Invalid nonce.');
+
+//     $action = sanitize_text_field($_POST['bulk_action'] ?? '');
+//     $posts = isset($_POST['selected_posts']) ? array_map('intval', $_POST['selected_posts']) : [];
+
+//     if (empty($action) || empty($posts)) {
+//         wp_redirect(admin_url('admin.php?page=content-expiry-overview&bulk=none'));
+//         exit;
+//     }
+
+//     foreach ($posts as $post_id) {
+//         $expiry = get_post_meta($post_id, '_expiry_date', true);
+//         if (!$expiry) continue;
+
+//         switch ($action) {
+//             case 'extend_30':
+//                 $new = date('Y-m-d H:i', strtotime('+30 days', strtotime($expiry)));
+//                 update_post_meta($post_id, '_expiry_date', $new);
+//                 break;
+//             case 'extend_90':
+//                 $new = date('Y-m-d H:i', strtotime('+90 days', strtotime($expiry)));
+//                 update_post_meta($post_id, '_expiry_date', $new);
+//                 break;
+//             case 'change_action_draft':
+//                 update_post_meta($post_id, '_expiry_action', 'draft');
+//                 break;
+//             case 'change_action_replace':
+//                 update_post_meta($post_id, '_expiry_action', 'replace');
+//                 break;
+//             case 'disable_expiry':
+//                 delete_post_meta($post_id, '_expiry_date');
+//                 update_post_meta($post_id, '_expiry_action', 'disable');
+//                 break;
+//         }
+//     }
+
+//     wp_redirect(admin_url('admin.php?page=content-expiry-overview&bulk=success'));
+//     exit;
+// });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // =======================
 // Notification System for Expiring Content
 // =======================
@@ -436,7 +541,9 @@ add_action('admin_init', function() {
     }
 });
 
-
+add_action('init', function() {
+    do_action('notify_expiring_posts');
+});
 
 
  add_action('notify_expiring_posts', 'cefm_notify_admin_and_authors_about_expiry');
