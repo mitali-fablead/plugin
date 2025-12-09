@@ -35,6 +35,34 @@ add_action('add_meta_boxes', function() {
 
 
 
+// ===========================
+// Enqueue Admin Scripts & Styles
+// ===========================
+add_action('admin_enqueue_scripts', function($hook_suffix) {
+    // Only load on post editor screens
+    if (in_array($hook_suffix, ['post.php', 'post-new.php'])) {
+        wp_enqueue_style(
+            'cefm-admin-style',
+            plugin_dir_url(__FILE__) . 'assets/admin.css',
+            [],
+            filemtime(plugin_dir_path(__FILE__) . 'assets/admin.css')
+        );
+
+        wp_enqueue_script(
+            'cefm-admin-script',
+            plugin_dir_url(__FILE__) . 'assets/admin.js',
+            ['jquery'],
+            filemtime(plugin_dir_path(__FILE__) . 'assets/admin.js'),
+            true
+        );
+    }
+});
+
+
+
+
+
+
 function render_expiry_box($post) {
     $expiry = get_post_meta($post->ID, '_expiry_date', true);
     $action = get_post_meta($post->ID, '_expiry_action', true);
@@ -42,29 +70,46 @@ function render_expiry_box($post) {
     $replace_msg = get_post_meta($post->ID, '_expiry_message', true);
 
     wp_nonce_field('save_expiry_meta', 'expiry_nonce');
+
+    // Convert stored value to HTML5 datetime-local format
+    $expiry_html_value = '';
+    if (!empty($expiry)) {
+        $time = strtotime($expiry);
+        if ($time) {
+            $expiry_html_value = date('Y-m-d\TH:i', $time);
+        }
+    }
     ?>
     <p><strong>Expiry Date:</strong><br>
-        <input type="datetime-local" name="expiry_date" value="<?php echo esc_attr($expiry); ?>" style="width:100%">
+        <input type="datetime-local" name="expiry_date" value="<?php echo esc_attr($expiry_html_value); ?>" style="width:100%">
     </p>
+
     <p><strong>Action on Expiry:</strong><br>
-        <select name="expiry_action" style="width:100%">
+        <select id="expiry_action" name="expiry_action" style="width:100%">
             <option value="draft" <?php selected($action, 'draft'); ?>>Move to Draft</option>
             <option value="trash" <?php selected($action, 'trash'); ?>>Move to Trash</option>
             <option value="redirect" <?php selected($action, 'redirect'); ?>>Redirect to Another URL</option>
             <option value="replace" <?php selected($action, 'replace'); ?>>Replace with Custom Message</option>
             <option value="delete" <?php selected($action, 'delete'); ?>>Delete Permanently</option>
             <option value="disable" <?php selected($action, 'disable'); ?>>Disable Expiry</option>
-
         </select>
     </p>
-    <p><strong>Redirect URL (if applicable):</strong><br>
-        <input type="url" name="expiry_redirect" value="<?php echo esc_url($redirect); ?>" style="width:100%">
-    </p>
-    <p><strong>Replace Message (if applicable):</strong><br>
-        <textarea name="expiry_message" rows="2" style="width:100%"><?php echo esc_textarea($replace_msg); ?></textarea>
-    </p>
+
+    <div id="expiry_redirect_field">
+        <p><strong>Redirect URL (if applicable):</strong><br>
+            <input type="url" name="expiry_redirect" value="<?php echo esc_url($redirect); ?>" style="width:100%">
+        </p>
+    </div>
+
+    <div id="expiry_message_field">
+        <p><strong>Replace Message (if applicable):</strong><br>
+            <textarea name="expiry_message" rows="2" style="width:100%"><?php echo esc_textarea($replace_msg); ?></textarea>
+        </p>
+    </div>
     <?php
 }
+
+
 
 
 // Save meta box data
@@ -93,16 +138,18 @@ if (isset($_POST['expiry_action']) && $_POST['expiry_action'] === 'disable') {
 
 
     if (!empty($_POST['expiry_date'])) {
-        // Normalize datetime format (remove "T")
-        $datetime = str_replace('T', ' ', sanitize_text_field($_POST['expiry_date']));
-        update_post_meta($post_id, '_expiry_date', $datetime);
+    $datetime_raw = sanitize_text_field($_POST['expiry_date']);
+    // Convert HTML5 datetime-local (Y-m-dTH:i) → MySQL-style (Y-m-d H:i)
+    $datetime = str_replace('T', ' ', $datetime_raw);
+    update_post_meta($post_id, '_expiry_date', $datetime);
 
-       
-        if (strtotime($datetime) > current_time('timestamp')) {
-            delete_post_meta($post_id, '_active_redirect');
-            delete_post_meta($post_id, '_replaced_content');
-        }
+    // Clear replaced/redirect content if future-dated
+    if (strtotime($datetime) > current_time('timestamp')) {
+        delete_post_meta($post_id, '_active_redirect');
+        delete_post_meta($post_id, '_replaced_content');
     }
+}
+
 
     update_post_meta($post_id, '_expiry_action', sanitize_text_field($_POST['expiry_action']));
     update_post_meta($post_id, '_expiry_redirect', esc_url_raw($_POST['expiry_redirect']));
@@ -112,76 +159,96 @@ if (isset($_POST['expiry_action']) && $_POST['expiry_action'] === 'disable') {
 
 
 // Schedule a daily cron event
-add_action('wp', function() {
-    if (!wp_next_scheduled('check_expired_posts')) {
-        wp_schedule_event(time(), 'hourly', 'check_expired_posts');
+// ============================
+// EXPIRY CHECKER — FIXED VERSION
+// ============================
+
+// Schedule hourly cron event if not yet registered
+add_action('init', function () {
+    if (!wp_next_scheduled('cefm_check_expired_posts')) {
+        wp_schedule_event(time(), 'hourly', 'cefm_check_expired_posts');
+    }
+});
+add_action('cefm_check_expired_posts', 'cefm_handle_expired_posts');
+
+function cefm_handle_expired_posts() {
+    $now = current_time('timestamp');
+
+    $expired_posts = get_posts([
+        'post_type'   => 'any',
+        'post_status' => ['publish', 'private', 'pending', 'draft'],
+        'meta_query'  => [
+            [
+                'key'     => '_expiry_date',
+                'compare' => 'EXISTS',
+            ],
+        ],
+        'numberposts' => -1,
+    ]);
+
+    foreach ($expired_posts as $post) {
+        $expiry_date   = get_post_meta($post->ID, '_expiry_date', true);
+        $expiry_action = get_post_meta($post->ID, '_expiry_action', true);
+
+        // Skip if disabled or invalid
+        if (empty($expiry_date) || $expiry_action === 'disable') {
+            continue;
+        }
+
+        $expiry_time = strtotime($expiry_date);
+
+        // ✅ If expiry date already passed
+        if ($expiry_time && $expiry_time <= $now) {
+            switch ($expiry_action) {
+                case 'draft':
+                    wp_update_post([
+                        'ID'          => $post->ID,
+                        'post_status' => 'draft',
+                    ]);
+                    break;
+
+                case 'trash':
+                    wp_trash_post($post->ID);
+                    break;
+
+                case 'delete':
+                    wp_delete_post($post->ID, true);
+                    break;
+
+                case 'redirect':
+                    $redirect = get_post_meta($post->ID, '_expiry_redirect', true);
+                    update_post_meta($post->ID, '_active_redirect', esc_url_raw($redirect));
+                    break;
+
+                case 'replace':
+                    $replace = get_post_meta($post->ID, '_expiry_message', true);
+                    update_post_meta($post->ID, '_replaced_content', wp_kses_post($replace));
+                    break;
+            }
+
+            // ✅ Clear expiry date so it doesn't process again
+            delete_post_meta($post->ID, '_expiry_date');
+        }
+    }
+}
+
+// Manual Test Trigger: Run expiry check immediately from URL
+add_action('admin_init', function () {
+    if (isset($_GET['run_cefm_expiry_check'])) {
+        cefm_handle_expired_posts();
+        wp_die('✅ Expiry check completed. Reload your post list — expired posts should now be Draft.');
     }
 });
 
-add_action('check_expired_posts', 'handle_expired_posts');
 
-function handle_expired_posts() {
-    $now = current_time('Y-m-d H:i');
-    $expired = get_posts([
-        'post_type' => 'any',
-        'meta_query' => [
-    [
-        'key' => '_expiry_date',
-        'value' => $now,
-        'compare' => '<=',
-        'type' => 'CHAR',
-    ]
-],
+// add_action('admin_init', function() {
+//     if (isset($_GET['test_expiry_run'])) {
+//         handle_expired_posts();
+//         wp_die('✅ handle_expired_posts() executed — check if expired posts are now in Draft.');
+//     }
+// });
 
-        'post_status' => ['publish', 'private'],
-        'numberposts' => -1
-    ]);
 
-    foreach ($expired as $post) {
-        $expiry_action = get_post_meta($post->ID, '_expiry_action', true);
-if ($expiry_action === 'disable') {
-    continue; // Skip disabled posts
-}
-
-        $action = get_post_meta($post->ID, '_expiry_action', true);
-        $redirect = get_post_meta($post->ID, '_expiry_redirect', true);
-        $replace = get_post_meta($post->ID, '_expiry_message', true);
-
-        switch ($action) {
-            case 'draft':
-                wp_update_post(['ID' => $post->ID, 'post_status' => 'draft']);
-                break;
-            case 'trash':
-                wp_trash_post($post->ID);
-                break;
-            case 'delete':
-                wp_delete_post($post->ID, true);
-                break;
-            case 'redirect':
-                update_post_meta($post->ID, '_active_redirect', esc_url_raw($redirect));
-                break;
-            case 'replace':
-                update_post_meta($post->ID, '_replaced_content', wp_kses_post($replace));
-                break;
-        //      case 'disable':
-        // // Simply clear expiry
-        // delete_post_meta($post->ID, '_expiry_date');
-        // delete_post_meta($post->ID, '_expiry_action');
-        // delete_post_meta($post->ID, '_expiry_redirect');
-        // delete_post_meta($post->ID, '_expiry_message');
-        // break;
-        }
-        if ( class_exists( 'WooCommerce' ) && 'product' === get_post_type( $post->ID ) ) {
-        // Get Shop page URL
-        $shop_url = wc_get_page_permalink( 'shop' );
-
-        // If no custom redirect was set by user, default to shop page
-        if ( empty( $redirect ) ) {
-            update_post_meta( $post->ID, '_active_redirect', esc_url_raw( $shop_url ) );
-        }
-    }
-    }
-}
 
 // Optional: Handle front-end redirect or replace
 add_action('template_redirect', function() {
@@ -217,18 +284,47 @@ add_action('template_redirect', function() {
 // =======================
 // Admin Dashboard Overview Page with Refresh & Versioning
 // =======================
+// =======================
 
 add_action('admin_menu', function() {
+    // Main menu (top-level)
     add_menu_page(
-        'Content Expiry Manager',// Page title
-        'Content Expiry',                
-        'manage_options',                 // Capability
-        'content-expiry-overview',        // Slug
-        'render_content_expiry_overview', // Callback function
-        'dashicons-clock',                // Icon
-        25                                // Position in admin menu
+        __('Content Expiry & Freshness Manager', 'cefm'), // Page title
+        __('Content Expiry & Freshness Manager', 'cefm'), // Menu title
+        'manage_options',                                 // Capability
+        'cefm-dashboard',                                 // Slug for main page
+        'cefm_render_dashboard_page',                     // Callback function
+        'dashicons-clock',                                // Icon
+        25                                                // Position
+    );
+
+    // Submenu: Content Expiry
+    add_submenu_page(
+        'cefm-dashboard',                                 // Parent slug
+        __('Content Expiry', 'cefm'),                     // Page title
+        __('Content Expiry', 'cefm'),                     // Submenu label
+        'manage_options',                                 // Capability
+        'content-expiry-overview',                        // Submenu slug
+        'render_content_expiry_overview'                  // Callback
     );
 });
+
+// =======================
+// Dashboard (Main Page)
+// =======================
+function cefm_render_dashboard_page() {
+    echo '<div class="wrap">';
+    echo '<h1>🕒 Content Expiry & Freshness Manager</h1>';
+    echo '<p>Welcome to the Content Expiry & Freshness Manager Dashboard.</p>';
+    echo '<p>Use the <strong>“Content Expiry”</strong> submenu to view and manage expiring posts.</p>';
+    echo '<hr>';
+    echo '<h2>Quick Links</h2>';
+    echo '<ul style="font-size:16px; line-height:1.7;">';
+    echo '<li><a href="' . admin_url('admin.php?page=content-expiry-overview') . '">📋 Open Content Expiry Overview</a></li>';
+    echo '</ul>';
+    echo '</div>';
+}
+
 
 // Handle "Refresh" Action
 add_action('admin_post_cefm_refresh_expiry', function() {
@@ -567,11 +663,93 @@ add_action('notify_expiring_posts', 'cefm_notify_admin_and_authors_about_expiry'
 // }
 
 
+// function cefm_notify_admin_and_authors_about_expiry() {
+//     $now = current_time('timestamp');
+//     $admin_email = get_option('admin_email');
+
+//     // Get all posts that have an expiry date set
+//     $posts = get_posts([
+//         'post_type'   => 'any',
+//         'post_status' => ['publish', 'private'],
+//         'meta_query'  => [
+//             [
+//                 'key'     => '_expiry_date',
+//                 'compare' => 'EXISTS',
+//             ]
+//         ],
+//         'numberposts' => -1,
+//     ]);
+
+//     if (empty($posts)) {
+//         return;
+//     }
+
+//     foreach ($posts as $post) {
+//         $expiry_action = get_post_meta($post->ID, '_expiry_action', true);
+// if ($expiry_action === 'disable') {
+//     continue; // Skip disabled posts
+// }
+
+//         $expiry_date = get_post_meta($post->ID, '_expiry_date', true);
+//         if (empty($expiry_date)) continue;
+
+//         $expiry_time = strtotime($expiry_date);
+//         $days_left = floor(($expiry_time - $now) / DAY_IN_SECONDS);
+// // print_r($days_left);
+// // die;
+//         // Only send notifications for 7 days before and on expiry day
+//         if (in_array($days_left, [7, 0], true)) {
+
+//             $flag_key = '_expiry_notified_' . $days_left;
+
+//             // Prevent duplicate notifications
+//             if (get_post_meta($post->ID, $flag_key, true)) {
+//                 continue;
+//             }
+
+//             $expiry_action = get_post_meta($post->ID, '_expiry_action', true);
+//             $subject = sprintf(
+//                 "Content Expiry Alert: \"%s\" expires in %d day%s",
+//                 $post->post_title,
+//                 $days_left,
+//                 ($days_left === 1 ? '' : 's')
+//             );
+
+//             $message = "Hi Admin,\n\n";
+//             $message .= "The following post is nearing expiry:\n";
+//             $message .= "------------------------------------\n";
+//             $message .= "Title: {$post->post_title}\n";
+//             $message .= "Post Type: {$post->post_type}\n";
+//             $message .= "Expiry Date: {$expiry_date}\n";
+//             $message .= "Action on Expiry: {$expiry_action}\n";
+//             $message .= "Edit Post: " . admin_url("post.php?post={$post->ID}&action=edit") . "\n\n";
+//             $message .= "------------------------------------\n";
+//             $message .= "Regards,\nContent Expiry & Freshness Manager";
+
+//             // Send to admin
+//             $headers = ['Content-Type: text/plain; charset=UTF-8'];
+//             wp_mail($admin_email, $subject, $message, $headers);
+
+//             // Send to author
+//             $author = get_userdata($post->post_author);
+//             if ($author && !empty($author->user_email)) {
+//                 $author_message = "Hi {$author->display_name},\n\n";
+//                 $author_message .= "Your post \"{$post->post_title}\" is nearing its expiry date ({$expiry_date}).\n";
+//                 $author_message .= "Please review or update it soon.\n\n";
+//                 $author_message .= "Edit Here: " . admin_url("post.php?post={$post->ID}&action=edit") . "\n\n";
+//                 $author_message .= "Thanks,\nContent Expiry & Freshness Manager";
+//                 wp_mail($author->user_email, $subject, $author_message, $headers);
+//             }
+
+//             // Mark as notified
+//             update_post_meta($post->ID, $flag_key, current_time('mysql'));
+//         }
+//     }
+// }
 function cefm_notify_admin_and_authors_about_expiry() {
     $now = current_time('timestamp');
     $admin_email = get_option('admin_email');
 
-    // Get all posts that have an expiry date set
     $posts = get_posts([
         'post_type'   => 'any',
         'post_status' => ['publish', 'private'],
@@ -584,71 +762,80 @@ function cefm_notify_admin_and_authors_about_expiry() {
         'numberposts' => -1,
     ]);
 
-    if (empty($posts)) {
-        return;
-    }
+    if (empty($posts)) return;
 
     foreach ($posts as $post) {
+
         $expiry_action = get_post_meta($post->ID, '_expiry_action', true);
-if ($expiry_action === 'disable') {
-    continue; // Skip disabled posts
-}
+        if ($expiry_action === 'disable') continue;
 
-        $expiry_date = get_post_meta($post->ID, '_expiry_date', true);
-        if (empty($expiry_date)) continue;
+        $expiry_date_raw = get_post_meta($post->ID, '_expiry_date', true);
+        if (empty($expiry_date_raw)) continue;
 
-        $expiry_time = strtotime($expiry_date);
-        $days_left = floor(($expiry_time - $now) / DAY_IN_SECONDS);
+        $expiry_time = strtotime($expiry_date_raw);
 
-        // Only send notifications for 7 days before and on expiry day
-        if (in_array($days_left, [7, 0], true)) {
-
-            $flag_key = '_expiry_notified_' . $days_left;
-
-            // Prevent duplicate notifications
-            if (get_post_meta($post->ID, $flag_key, true)) {
-                continue;
+        if (!$expiry_time) {
+            // Try converting DD/MM/YYYY → YYYY-MM-DD
+            if (preg_match('/(\d{2})\/(\d{2})\/(\d{4})/', $expiry_date_raw, $m)) {
+                $expiry_time = strtotime("{$m[3]}-{$m[2]}-{$m[1]}");
             }
-
-            $expiry_action = get_post_meta($post->ID, '_expiry_action', true);
-            $subject = sprintf(
-                "Content Expiry Alert: \"%s\" expires in %d day%s",
-                $post->post_title,
-                $days_left,
-                ($days_left === 1 ? '' : 's')
-            );
-
-            $message = "Hi Admin,\n\n";
-            $message .= "The following post is nearing expiry:\n";
-            $message .= "------------------------------------\n";
-            $message .= "Title: {$post->post_title}\n";
-            $message .= "Post Type: {$post->post_type}\n";
-            $message .= "Expiry Date: {$expiry_date}\n";
-            $message .= "Action on Expiry: {$expiry_action}\n";
-            $message .= "Edit Post: " . admin_url("post.php?post={$post->ID}&action=edit") . "\n\n";
-            $message .= "------------------------------------\n";
-            $message .= "Regards,\nContent Expiry & Freshness Manager";
-
-            // Send to admin
-            $headers = ['Content-Type: text/plain; charset=UTF-8'];
-            wp_mail($admin_email, $subject, $message, $headers);
-
-            // Send to author
-            $author = get_userdata($post->post_author);
-            if ($author && !empty($author->user_email)) {
-                $author_message = "Hi {$author->display_name},\n\n";
-                $author_message .= "Your post \"{$post->post_title}\" is nearing its expiry date ({$expiry_date}).\n";
-                $author_message .= "Please review or update it soon.\n\n";
-                $author_message .= "Edit Here: " . admin_url("post.php?post={$post->ID}&action=edit") . "\n\n";
-                $author_message .= "Thanks,\nContent Expiry & Freshness Manager";
-                wp_mail($author->user_email, $subject, $author_message, $headers);
-            }
-
-            // Mark as notified
-            update_post_meta($post->ID, $flag_key, current_time('mysql'));
         }
+
+        if (!$expiry_time) {
+            continue;
+        }
+
+        $days_left = floor(($expiry_time - $now) / DAY_IN_SECONDS);
+$notify_days = [7, 6, 5, 4, 3, 2, 1, 0];
+        // Only notify at 7 days and 0 days
+        if (in_array($days_left, $notify_days, true)) continue;
+// print_r($days_left);
+//  die;
+
+        $flag_key = '_expiry_notified_' . $days_left;
+//  print_r("hello");
+//  die;     
+        if (get_post_meta($post->ID, $flag_key, true)) continue;
+// print_r("hello");
+//  die; 
+        $subject = sprintf(
+            "Content Expiry Alert: \"%s\" expires in %d day%s",
+            $post->post_title,
+            $days_left,
+            ($days_left === 1 ? '' : 's')
+        );
+
+        $expiry_date = date('Y-m-d', $expiry_time);
+
+        $message = "Hi Admin,\n\n";
+        $message .= "The following post is nearing expiry:\n";
+        $message .= "------------------------------------\n";
+        $message .= "Title: {$post->post_title}\n";
+        $message .= "Post Type: {$post->post_type}\n";
+        $message .= "Expiry Date: {$expiry_date}\n";
+        $message .= "Action on Expiry: {$expiry_action}\n";
+        $message .= "Edit Post: " . admin_url("post.php?post={$post->ID}&action=edit") . "\n\n";
+        $message .= "------------------------------------\n";
+        $message .= "Regards,\nContent Expiry & Freshness Manager";
+  
+        $headers = ['Content-Type: text/plain; charset=UTF-8'];
+
+        wp_mail($admin_email, $subject, $message, $headers);
+
+        $author = get_userdata($post->post_author);
+        if ($author && !empty($author->user_email)) {
+            $author_message = "Hi {$author->display_name},\n\n";
+            $author_message .= "Your post \"{$post->post_title}\" is nearing expiration ({$expiry_date}).\n";
+            $author_message .= "Please review or update it.\n\n";
+            $author_message .= "Edit Here: " . admin_url("post.php?post={$post->ID}&action=edit") . "\n\n";
+            $author_message .= "Thanks,\nContent Expiry & Freshness Manager";
+            wp_mail($author->user_email, $subject, $author_message, $headers);
+        }
+
+        update_post_meta($post->ID, $flag_key, current_time('mysql'));
     }
 }
+
 
 
 // Schedule hourly check if not already scheduled
