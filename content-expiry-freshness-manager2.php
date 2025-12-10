@@ -1,6 +1,6 @@
 <?php
 /**
- * Plugin Name: Content Expiry & Freshness Manager2
+ * Plugin Name: Content Expiry & Freshness Manager
  * Plugin URI:  https://example.com
  * Description: Manage expiry/refresh rules for posts, pages and custom post types. Archive, redirect, replace or delete content automatically and notify authors.
  * Version:     0.1.0
@@ -275,12 +275,6 @@ add_action('template_redirect', function() {
 
 
 
-
-
-
-
-
-
 // =======================
 // Admin Dashboard Overview Page with Refresh & Versioning
 // =======================
@@ -306,6 +300,14 @@ add_action('admin_menu', function() {
         'manage_options',                                 // Capability
         'content-expiry-overview',                        // Submenu slug
         'render_content_expiry_overview'                  // Callback
+    );
+    add_submenu_page(
+        'cefm-dashboard',                // Parent slug
+        __('Settings', 'cefm'),          // Page title
+        __('Settings', 'cefm'),          // Submenu label
+        'manage_options',                // Capability
+        'cefm-settings',                 // Submenu slug
+        'cefm_render_settings_page'      // Callback
     );
 });
 
@@ -579,26 +581,19 @@ function render_content_expiry_overview() {
 // =======================
 
 // Schedule the notification cron (if not already scheduled)
-add_action('wp', function() {
-    if (!wp_next_scheduled('notify_expiring_posts')) {
-        wp_schedule_event(time(), 'hourly', 'notify_expiring_posts');
+add_action('save_post', 'cefm_notify_admin_and_authors_about_expiry');
+function cefm_notify_admin_and_authors_about_expiry_on_save($post_id) {
+
+    // Prevent infinite loop & autosave issues
+    if (wp_is_post_autosave($post_id) || wp_is_post_revision($post_id)) {
+        return;
     }
-});
 
+    // Run your notification function
+    cefm_notify_admin_and_authors_about_expiry();
+}
+add_action('save_post', 'cefm_notify_admin_and_authors_about_expiry_on_save');
 
-add_action('admin_init', function() {
-    if ( isset($_GET['force_notify_test']) ) {
-        do_action('notify_expiring_posts');
-        wp_die('Notifications sent (check your mail logs)');
-    }
-});
-
-add_action('init', function() {
-    do_action('notify_expiring_posts');
-});
-
-
-add_action('notify_expiring_posts', 'cefm_notify_admin_and_authors_about_expiry');
 
 // function cefm_notify_admin_and_authors_about_expiry() {
 //     $now = current_time('timestamp');
@@ -663,89 +658,6 @@ add_action('notify_expiring_posts', 'cefm_notify_admin_and_authors_about_expiry'
 // }
 
 
-// function cefm_notify_admin_and_authors_about_expiry() {
-//     $now = current_time('timestamp');
-//     $admin_email = get_option('admin_email');
-
-//     // Get all posts that have an expiry date set
-//     $posts = get_posts([
-//         'post_type'   => 'any',
-//         'post_status' => ['publish', 'private'],
-//         'meta_query'  => [
-//             [
-//                 'key'     => '_expiry_date',
-//                 'compare' => 'EXISTS',
-//             ]
-//         ],
-//         'numberposts' => -1,
-//     ]);
-
-//     if (empty($posts)) {
-//         return;
-//     }
-
-//     foreach ($posts as $post) {
-//         $expiry_action = get_post_meta($post->ID, '_expiry_action', true);
-// if ($expiry_action === 'disable') {
-//     continue; // Skip disabled posts
-// }
-
-//         $expiry_date = get_post_meta($post->ID, '_expiry_date', true);
-//         if (empty($expiry_date)) continue;
-
-//         $expiry_time = strtotime($expiry_date);
-//         $days_left = floor(($expiry_time - $now) / DAY_IN_SECONDS);
-// // print_r($days_left);
-// // die;
-//         // Only send notifications for 7 days before and on expiry day
-//         if (in_array($days_left, [7, 0], true)) {
-
-//             $flag_key = '_expiry_notified_' . $days_left;
-
-//             // Prevent duplicate notifications
-//             if (get_post_meta($post->ID, $flag_key, true)) {
-//                 continue;
-//             }
-
-//             $expiry_action = get_post_meta($post->ID, '_expiry_action', true);
-//             $subject = sprintf(
-//                 "Content Expiry Alert: \"%s\" expires in %d day%s",
-//                 $post->post_title,
-//                 $days_left,
-//                 ($days_left === 1 ? '' : 's')
-//             );
-
-//             $message = "Hi Admin,\n\n";
-//             $message .= "The following post is nearing expiry:\n";
-//             $message .= "------------------------------------\n";
-//             $message .= "Title: {$post->post_title}\n";
-//             $message .= "Post Type: {$post->post_type}\n";
-//             $message .= "Expiry Date: {$expiry_date}\n";
-//             $message .= "Action on Expiry: {$expiry_action}\n";
-//             $message .= "Edit Post: " . admin_url("post.php?post={$post->ID}&action=edit") . "\n\n";
-//             $message .= "------------------------------------\n";
-//             $message .= "Regards,\nContent Expiry & Freshness Manager";
-
-//             // Send to admin
-//             $headers = ['Content-Type: text/plain; charset=UTF-8'];
-//             wp_mail($admin_email, $subject, $message, $headers);
-
-//             // Send to author
-//             $author = get_userdata($post->post_author);
-//             if ($author && !empty($author->user_email)) {
-//                 $author_message = "Hi {$author->display_name},\n\n";
-//                 $author_message .= "Your post \"{$post->post_title}\" is nearing its expiry date ({$expiry_date}).\n";
-//                 $author_message .= "Please review or update it soon.\n\n";
-//                 $author_message .= "Edit Here: " . admin_url("post.php?post={$post->ID}&action=edit") . "\n\n";
-//                 $author_message .= "Thanks,\nContent Expiry & Freshness Manager";
-//                 wp_mail($author->user_email, $subject, $author_message, $headers);
-//             }
-
-//             // Mark as notified
-//             update_post_meta($post->ID, $flag_key, current_time('mysql'));
-//         }
-//     }
-// }
 function cefm_notify_admin_and_authors_about_expiry() {
     $now = current_time('timestamp');
     $admin_email = get_option('admin_email');
@@ -792,10 +704,9 @@ $notify_days = [7, 6, 5, 4, 3, 2, 1, 0];
 // print_r($days_left);
 //  die;
 
-        $flag_key = '_expiry_notified_' . $days_left;
-//  print_r("hello");
-//  die;     
+        $flag_key = '_expiry_notified_' . $days_left;   
         if (get_post_meta($post->ID, $flag_key, true)) continue;
+        
 // print_r("hello");
 //  die; 
         $subject = sprintf(
@@ -839,21 +750,21 @@ $notify_days = [7, 6, 5, 4, 3, 2, 1, 0];
 
 
 // Schedule hourly check if not already scheduled
-add_action('wp', function() {
-    if (!wp_next_scheduled('cefm_check_expiry_posts')) {
-        wp_schedule_event(time(), 'hourly', 'cefm_check_expiry_posts');
-    }
-});
+// add_action('wp', function() {
+//     if (!wp_next_scheduled('cefm_check_expiry_posts')) {
+//         wp_schedule_event(time(), 'hourly', 'cefm_check_expiry_posts');
+//     }
+// });
 
-add_action('cefm_check_expiry_posts', 'cefm_notify_admin_and_authors_about_expiry');
+// add_action('cefm_check_expiry_posts', 'cefm_notify_admin_and_authors_about_expiry');
 
-// Manual test trigger (for debugging)
-add_action('admin_init', function() {
-    if (isset($_GET['test_cefm_notify'])) {
-        cefm_notify_admin_and_authors_about_expiry();
-        wp_die('Expiry notifications sent (check your email or logs)');
-    }
-});
+// // Manual test trigger (for debugging)
+// add_action('admin_init', function() {
+//     if (isset($_GET['test_cefm_notify'])) {
+//         cefm_notify_admin_and_authors_about_expiry();
+//         wp_die('Expiry notifications sent (check your email or logs)');
+//     }
+// });
 
 
 
@@ -929,3 +840,85 @@ function cefm_cleanup_site_environment() {
 
 
 
+
+function cefm_render_settings_page() {
+    ?>
+    <div class="wrap">
+        <h1><?php _e('Content Expiry & Freshness Manager - Settings', 'cefm'); ?></h1>
+
+        <p>Here you can configure plugin settings such as WooCommerce behavior, email settings, default expiry actions, etc.</p>
+
+        <form method="post" action="options.php">
+            <?php
+                settings_fields('cefm_settings_group');
+                do_settings_sections('cefm-settings');
+                submit_button();
+            ?>
+        </form>
+    </div>
+    <?php
+}
+
+
+add_action('admin_init', 'cefm_register_wc_settings');
+
+function cefm_register_wc_settings() {
+
+    // Register setting
+    register_setting(
+        'cefm_settings_group',          // Settings group
+        'cefm_wc_enable_product_expiry' // Option name
+    );
+
+    // Add section
+    add_settings_section(
+        'cefm_wc_settings_section',
+        __('WooCommerce Settings', 'cefm'),
+        function() {
+            echo "<p>Configure WooCommerce behavior for product expiry.</p>";
+        },
+        'cefm-settings'
+    );
+
+    // Add checkbox field
+    add_settings_field(
+        'cefm_wc_enable_product_expiry_field',
+        __('Enable Product Expiry for WooCommerce', 'cefm'),
+        'cefm_wc_enable_product_expiry_field_callback',
+        'cefm-settings',
+        'cefm_wc_settings_section'
+    );
+}
+
+function cefm_wc_enable_product_expiry_field_callback() {
+
+    $option = get_option('cefm_wc_enable_product_expiry', '');
+
+    ?>
+    <label>
+        <input type="checkbox" name="cefm_wc_enable_product_expiry" value="1" 
+            <?php checked(1, $option); ?> />
+        <?php _e('Enable expiry logic for WooCommerce products (redirect, hide, or expire based on date).', 'cefm'); ?>
+    </label>
+    <?php
+}
+
+add_action('add_meta_boxes', 'cefm_control_wc_expiry_meta_box');
+
+function cefm_control_wc_expiry_meta_box() {
+
+    // If WooCommerce setting is checked → hide expiry box on ALL WooCommerce products
+    if (get_option('cefm_wc_enable_product_expiry')) {
+        return; // STOP — do not add meta box
+    }
+
+    // Otherwise, add the meta box normally
+    add_meta_box(
+        'cefm_expiry_meta_box',
+        __('Content Expiry', 'cefm'),
+        'render_expiry_box',
+        'product',           // WooCommerce product post type
+        'side',
+        'default'
+    );
+}
