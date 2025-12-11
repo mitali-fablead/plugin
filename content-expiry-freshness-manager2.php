@@ -64,6 +64,9 @@ add_action('admin_enqueue_scripts', function($hook_suffix) {
 
 
 function render_expiry_box($post) {
+
+
+
     $expiry = get_post_meta($post->ID, '_expiry_date', true);
     $action = get_post_meta($post->ID, '_expiry_action', true);
     $redirect = get_post_meta($post->ID, '_expiry_redirect', true);
@@ -79,6 +82,8 @@ function render_expiry_box($post) {
             $expiry_html_value = date('Y-m-d\TH:i', $time);
         }
     }
+    // print_r($time);
+    // die;
     ?>
     <p><strong>Expiry Date:</strong><br>
         <input type="datetime-local" name="expiry_date" value="<?php echo esc_attr($expiry_html_value); ?>" style="width:100%">
@@ -135,18 +140,29 @@ if (isset($_POST['expiry_action']) && $_POST['expiry_action'] === 'disable') {
 
 
 
-
-
     if (!empty($_POST['expiry_date'])) {
     $datetime_raw = sanitize_text_field($_POST['expiry_date']);
     // Convert HTML5 datetime-local (Y-m-dTH:i) → MySQL-style (Y-m-d H:i)
     $datetime = str_replace('T', ' ', $datetime_raw);
     update_post_meta($post_id, '_expiry_date', $datetime);
+//     $datetime_local = str_replace('T', ' ', $datetime_raw);
+
+// // Convert local time → WP Timezone timestamp
+// $timestamp = strtotime($datetime_local);
+
+// // Convert timestamp → a normalized WP-time format
+// $datetime_wp = date('Y-m-d H:i:s', $timestamp);
+
+// update_post_meta($post_id, '_expiry_date', $datetime_wp);
+
 
     // Clear replaced/redirect content if future-dated
     if (strtotime($datetime) > current_time('timestamp')) {
         delete_post_meta($post_id, '_active_redirect');
         delete_post_meta($post_id, '_replaced_content');
+
+        print_r(current_time('timestamp'));
+        die;
     }
 }
 
@@ -172,39 +188,49 @@ add_action('init', function () {
 add_action('cefm_check_expired_posts', 'cefm_handle_expired_posts');
 
 function cefm_handle_expired_posts() {
-    $now = current_time('timestamp');
 
-    $expired_posts = get_posts([
+    $wc_enabled = get_option('cefm_wc_enable_product_expiry');
+
+    $now = current_time('timestamp');
+// print_r($now);
+// die;
+    $posts = get_posts([
         'post_type'   => 'any',
-        'post_status' => ['publish', 'private', 'pending', 'draft'],
+        'post_status' => ['publish', 'private'],
         'meta_query'  => [
             [
                 'key'     => '_expiry_date',
                 'compare' => 'EXISTS',
-            ],
+            ]
         ],
         'numberposts' => -1,
     ]);
 
-    foreach ($expired_posts as $post) {
-        $expiry_date   = get_post_meta($post->ID, '_expiry_date', true);
-        $expiry_action = get_post_meta($post->ID, '_expiry_action', true);
+    if (empty($posts)) return;
 
-        // Skip if disabled or invalid
-        if (empty($expiry_date) || $expiry_action === 'disable') {
+    foreach ($posts as $post) {
+
+        // ❌ OFF = skip WooCommerce products
+        // ✔ ON = allow expiry to run
+        if (empty($wc_enabled) && $post->post_type === 'product') {
             continue;
         }
 
-        $expiry_time = strtotime($expiry_date);
+        $expiry_date_raw = get_post_meta($post->ID, '_expiry_date', true);
+        if (empty($expiry_date_raw)) continue;
 
-        // ✅ If expiry date already passed
-        if ($expiry_time && $expiry_time <= $now) {
-            switch ($expiry_action) {
+        $expiry_time = strtotime($expiry_date_raw);
+//         print_r($expiry_time);
+// die;
+        if (!$expiry_time) continue;
+
+        if ($expiry_time <= $now) {
+
+            $action = get_post_meta($post->ID, '_expiry_action', true);
+
+            switch ($action) {
                 case 'draft':
-                    wp_update_post([
-                        'ID'          => $post->ID,
-                        'post_status' => 'draft',
-                    ]);
+                    wp_update_post(['ID' => $post->ID, 'post_status' => 'draft']);
                     break;
 
                 case 'trash':
@@ -214,20 +240,7 @@ function cefm_handle_expired_posts() {
                 case 'delete':
                     wp_delete_post($post->ID, true);
                     break;
-
-                case 'redirect':
-                    $redirect = get_post_meta($post->ID, '_expiry_redirect', true);
-                    update_post_meta($post->ID, '_active_redirect', esc_url_raw($redirect));
-                    break;
-
-                case 'replace':
-                    $replace = get_post_meta($post->ID, '_expiry_message', true);
-                    update_post_meta($post->ID, '_replaced_content', wp_kses_post($replace));
-                    break;
             }
-
-            // ✅ Clear expiry date so it doesn't process again
-            delete_post_meta($post->ID, '_expiry_date');
         }
     }
 }
@@ -252,6 +265,9 @@ add_action('admin_init', function () {
 
 // Optional: Handle front-end redirect or replace
 add_action('template_redirect', function() {
+
+
+
     if (is_singular()) {
         global $post;
         $redirect = get_post_meta($post->ID, '_active_redirect', true);
@@ -358,6 +374,14 @@ add_action('admin_post_cefm_refresh_expiry', function() {
     ];
     update_post_meta($post_id, '_expiry_logs', $logs);
 
+
+
+print_r($old_expiry);
+print_r($new_expiry);
+ die;
+
+
+ 
     wp_redirect(admin_url('admin.php?page=content-expiry-overview&refreshed=1'));
     exit;
 });
@@ -376,6 +400,10 @@ function render_content_expiry_overview() {
         foreach ($selected_posts as $post_id) {
             if ($action === 'extend_30') {
                 $old_expiry = get_post_meta($post_id, '_expiry_date', true);
+
+// print_r($old_expiry);
+// die;
+
                 if ($old_expiry) {
                     $new_expiry = date('Y-m-d H:i', strtotime("+30 days", strtotime($old_expiry)));
                     update_post_meta($post_id, '_expiry_date', $new_expiry);
@@ -696,7 +724,8 @@ function cefm_notify_admin_and_authors_about_expiry() {
         if (!$expiry_time) {
             continue;
         }
-
+// print_r($expiry_time);
+//  die;
         $days_left = floor(($expiry_time - $now) / DAY_IN_SECONDS);
 $notify_days = [7, 6, 5, 4, 3, 2, 1, 0];
         // Only notify at 7 days and 0 days
@@ -839,6 +868,9 @@ function cefm_cleanup_site_environment() {
 
 
 
+// -----------------------------------
+// wocommerce product hide/show functionality
+// ----------------------------------
 
 
 function cefm_render_settings_page() {
@@ -903,22 +935,41 @@ function cefm_wc_enable_product_expiry_field_callback() {
     <?php
 }
 
-add_action('add_meta_boxes', 'cefm_control_wc_expiry_meta_box');
+// add_action('add_meta_boxes', 'cefm_control_wc_expiry_meta_box');
 
-function cefm_control_wc_expiry_meta_box() {
+// function cefm_control_wc_expiry_meta_box() {
 
-    // If WooCommerce setting is checked → hide expiry box on ALL WooCommerce products
-    if (get_option('cefm_wc_enable_product_expiry')) {
-        return; // STOP — do not add meta box
-    }
+//     $enabled = get_option('cefm_wc_enable_product_expiry');
 
-    // Otherwise, add the meta box normally
-    add_meta_box(
-        'cefm_expiry_meta_box',
-        __('Content Expiry', 'cefm'),
-        'render_expiry_box',
-        'product',           // WooCommerce product post type
-        'side',
-        'default'
+//     // If OFF → hide meta box
+//     if (empty($enabled)) {
+//         return;
+//     }
+
+//     // If ON → show expiry meta box on WooCommerce products
+//     add_meta_box(
+//         'cefm_expiry_box',
+//         __('Content Expiry', 'cefm'),
+//         'cefm_handle_expired_posts',   // FIX function name
+//         'product',
+//         'side',
+//         'default'
+//     );
+// }
+
+
+add_action('admin_enqueue_scripts', function() {
+
+    wp_enqueue_script(
+        'cefm-admin-js',
+        plugin_dir_url(__FILE__) . 'assets/admin.js',
+        ['jquery'],
+        false,
+        true
     );
-}
+
+    wp_localize_script('cefm-admin-js', 'cefmAdminData', [
+        'enableExpiry' => (bool) get_option('cefm_wc_enable_product_expiry'),
+    ]);
+});
+
