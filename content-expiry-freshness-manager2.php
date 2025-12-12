@@ -161,8 +161,8 @@ if (isset($_POST['expiry_action']) && $_POST['expiry_action'] === 'disable') {
         delete_post_meta($post_id, '_active_redirect');
         delete_post_meta($post_id, '_replaced_content');
 
-        print_r(current_time('timestamp'));
-        die;
+        // print_r(current_time('timestamp'));
+        // die;
     }
 }
 
@@ -190,10 +190,8 @@ add_action('cefm_check_expired_posts', 'cefm_handle_expired_posts');
 function cefm_handle_expired_posts() {
 
     $wc_enabled = get_option('cefm_wc_enable_product_expiry');
-
     $now = current_time('timestamp');
-// print_r($now);
-// die;
+
     $posts = get_posts([
         'post_type'   => 'any',
         'post_status' => ['publish', 'private'],
@@ -210,38 +208,96 @@ function cefm_handle_expired_posts() {
 
     foreach ($posts as $post) {
 
-        // ❌ OFF = skip WooCommerce products
-        // ✔ ON = allow expiry to run
-        if (empty($wc_enabled) && $post->post_type === 'product') {
-            continue;
-        }
+//         // if (empty($wc_enabled) && $post->post_type === 'product') {
+//         //     continue;
+//         // }
+// $wc_enabled = get_option('cefm_wc_enable_product_expiry', '0');
 
-        $expiry_date_raw = get_post_meta($post->ID, '_expiry_date', true);
-        if (empty($expiry_date_raw)) continue;
+// // Skip WooCommerce products only when disabled
+// if ($post->post_type === 'product' && $wc_enabled !== '1') {
+//     continue;
+// }
+//         $expiry_raw = get_post_meta($post->ID, '_expiry_date', true);
+//         if (empty($expiry_raw)) continue;
 
-        $expiry_time = strtotime($expiry_date_raw);
-//         print_r($expiry_time);
-// die;
-        if (!$expiry_time) continue;
+//         $expiry_time = strtotime($expiry_raw);
+//         if (!$expiry_time) continue;
 
-        if ($expiry_time <= $now) {
+//         if ($expiry_time <= $now) {
 
-            $action = get_post_meta($post->ID, '_expiry_action', true);
+//             $action   = get_post_meta($post->ID, '_expiry_action', true);
+//             $redirect = get_post_meta($post->ID, '_expiry_redirect', true);
+//             $replace  = get_post_meta($post->ID, '_expiry_message', true);
 
-            switch ($action) {
-                case 'draft':
-                    wp_update_post(['ID' => $post->ID, 'post_status' => 'draft']);
-                    break;
+//             switch ($action) {
 
-                case 'trash':
-                    wp_trash_post($post->ID);
-                    break;
+//                 case 'draft':
+//                     wp_update_post(['ID' => $post->ID, 'post_status' => 'draft']);
+//                     break;
 
-                case 'delete':
-                    wp_delete_post($post->ID, true);
-                    break;
-            }
-        }
+//                 case 'trash':
+//                     wp_trash_post($post->ID);
+//                     break;
+
+//                 case 'delete':
+//                     wp_delete_post($post->ID, true);
+//                     break;
+
+//                 case 'redirect':
+//                     if (!empty($redirect)) {
+//                         update_post_meta($post->ID, '_active_redirect', esc_url_raw($redirect));
+//                     }
+//                     break;
+
+//                 case 'replace':
+//                     if (!empty($replace)) {
+//                         update_post_meta($post->ID, '_replaced_content', wp_kses_post($replace));
+//                     }
+//                     break;
+//             }
+//         }
+$wc_enabled = get_option('cefm_wc_enable_product_expiry', '0');
+
+// Skip WooCommerce products only when disabled
+if ($post->post_type === 'product' && $wc_enabled !== '1') {
+    continue;
+}
+
+$expiry_raw = get_post_meta($post->ID, '_expiry_date', true);
+if (empty($expiry_raw)) continue;
+
+$expiry_time = intval($expiry_raw);
+if (!$expiry_time) continue;
+
+if ($expiry_time <= $now) {
+
+    $action   = get_post_meta($post->ID, '_expiry_action', true);
+    $redirect = get_post_meta($post->ID, '_expiry_redirect', true);
+    $replace  = get_post_meta($post->ID, '_expiry_message', true);
+
+    switch ($action) {
+
+        case 'draft':
+            wp_update_post(['ID' => $post->ID, 'post_status' => 'draft']);
+            break;
+
+        case 'trash':
+            wp_trash_post($post->ID);
+            break;
+
+        case 'delete':
+            wp_delete_post($post->ID, true);
+            break;
+
+        case 'redirect':
+            update_post_meta($post->ID, '_active_redirect', esc_url_raw($redirect));
+            break;
+
+        case 'replace':
+            update_post_meta($post->ID, '_replaced_content', wp_kses_post($replace));
+            break;
+    }
+}
     }
 }
 
@@ -376,15 +432,20 @@ add_action('admin_post_cefm_refresh_expiry', function() {
 
 
 
-print_r($old_expiry);
-print_r($new_expiry);
- die;
+// print_r($old_expiry);
+// print_r($new_expiry);
+//  die;
 
 
  
     wp_redirect(admin_url('admin.php?page=content-expiry-overview&refreshed=1'));
     exit;
 });
+
+
+
+
+
 
 
 function render_content_expiry_overview() {
@@ -727,17 +788,17 @@ function cefm_notify_admin_and_authors_about_expiry() {
 // print_r($expiry_time);
 //  die;
         $days_left = floor(($expiry_time - $now) / DAY_IN_SECONDS);
+        // $days_left = (int) floor(($expiry_time - $now) / DAY_IN_SECONDS);
 $notify_days = [7, 6, 5, 4, 3, 2, 1, 0];
-        // Only notify at 7 days and 0 days
-        if (in_array($days_left, $notify_days, true)) continue;
 // print_r($days_left);
 //  die;
+        // Only notify at 7 days and 0 days
+        // if (in_array($days_left, $notify_days, true)) continue;
+         if (in_array($days_left, [7, 0])) continue;
 
         $flag_key = '_expiry_notified_' . $days_left;   
         if (get_post_meta($post->ID, $flag_key, true)) continue;
         
-// print_r("hello");
-//  die; 
         $subject = sprintf(
             "Content Expiry Alert: \"%s\" expires in %d day%s",
             $post->post_title,
