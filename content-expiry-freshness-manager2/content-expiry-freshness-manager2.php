@@ -346,7 +346,7 @@ function cefm_render_dashboard_page() {
     echo '<p>Use the <strong>“Content Expiry”</strong> submenu to view and manage expiring posts.</p>';
     echo '<hr>';
     echo '<h2>Quick Links</h2>';
-    echo '<ul style="font-size:16px; line-height:1.7;">';
+    echo '<ul style="font-size:16px; line-height:1.7; ">';
     echo '<li><a href="' . admin_url('admin.php?page=content-expiry-overview') . '">📋 Open Content Expiry Overview</a></li>';
     echo '</ul>';
     echo '</div>';
@@ -424,6 +424,168 @@ update_post_meta($post_id, '_expiry_date', $new_expiry);
     wp_redirect(admin_url('admin.php?page=content-expiry-overview&refreshed=1'));
     exit;
 });
+
+
+
+
+
+
+
+
+
+// -------------------------------------------------
+// ---------------- csv file download --------------
+// --------------------------------------------------
+
+add_action('admin_post_cefm_download_csv', 'cefm_download_expiry_csv');
+
+function cefm_download_expiry_csv() {
+
+    if (!current_user_can('manage_options')) {
+        wp_die('Unauthorized');
+    }
+
+    check_admin_referer('cefm_download_csv');
+
+while (ob_get_level() > 0) {
+    ob_end_clean();
+}
+
+    nocache_headers();
+
+    // Get filters from URL
+    $filter_post_type = isset($_GET['filter_post_type'])
+        ? sanitize_text_field($_GET['filter_post_type'])
+        : '';
+
+    $filter_status = isset($_GET['filter_status'])
+        ? sanitize_text_field($_GET['filter_status'])
+        : '';
+
+    header('Content-Type: text/csv; charset=UTF-8');
+    header('Content-Disposition: attachment; filename=content-expiry-overview.csv');
+
+    $output = fopen('php://output', 'w');
+
+    // CSV header
+    fputcsv($output, [
+        'Post ID',
+        'Title',
+        'Post Type',
+         'Post URL',
+        'Expiry Date',
+        'Action on Expiry',
+        'Status'
+    ]);
+
+    $posts = get_posts([
+        'post_type'   => $filter_post_type ?: 'any',
+        'post_status' => ['publish', 'private', 'draft', 'pending'],
+        'meta_query'  => [
+            [
+                'key'     => '_expiry_date',
+                'compare' => 'EXISTS',
+            ],
+        ],
+        'numberposts' => -1,
+    ]);
+
+    $now_ts      = current_time('timestamp');
+    $upcoming_ts = $now_ts + (DAY_IN_SECONDS * 7);
+
+    foreach ($posts as $post) {
+                       
+        $expiry  = get_post_meta($post->ID, '_expiry_date', true);
+        $action  = get_post_meta($post->ID, '_expiry_action', true);
+        $expiry_ts = cefm_get_expiry_timestamp($expiry);
+
+        // Determine status (same logic as table)
+        if ($action === 'disable' || !$expiry_ts) {
+            $status = 'disabled';
+        } elseif ($post->post_status === 'pending') {
+            $status = 'pending';
+        } elseif ($expiry_ts <= $now_ts) {
+            $status = 'expired';
+        } elseif ($expiry_ts <= $upcoming_ts) {
+            $status = 'expiring';
+        } else {
+            $status = 'active';
+        }
+
+        // Apply status filter
+        if ($filter_status && $filter_status !== $status) {
+            continue;
+        }
+
+        fputcsv($output, [
+            $post->ID,
+            get_the_title($post),
+            $post->post_type,
+             get_permalink($post),
+            $expiry_ts ? wp_date('Y-m-d H:i', $expiry_ts) : '',
+            ucfirst($action ?: '—'),
+            ucfirst($status),
+        ]);
+    }
+
+    fclose($output);
+    exit;
+}
+
+// add_action('admin_post_cefm_download_csv', 'cefm_download_expiry_csv');
+
+// function cefm_download_expiry_csv() {
+
+//     if (!current_user_can('manage_options')) {
+//         wp_die('Unauthorized');
+//     }
+
+//     check_admin_referer('cefm_download_csv');
+
+//     header('Content-Type: text/csv; charset=UTF-8');
+//     header('Content-Disposition: attachment; filename=content-expiry-overview.csv');
+
+//     $output = fopen('php://output', 'w');
+
+//     // CSV header row
+//     fputcsv($output, [
+//         'Post Type',
+//         'Expiry Date',
+//         'Action on Expiry'
+//     ]);
+
+//     $posts = get_posts([
+//         'post_type'   => 'any',
+//         'post_status' => ['publish', 'private', 'draft', 'pending'],
+//         'meta_query'  => [
+//             [
+//                 'key'     => '_expiry_date',
+//                 'compare' => 'EXISTS',
+//             ],
+//         ],
+//         'numberposts' => -1,
+//     ]);
+
+//     foreach ($posts as $post) {
+
+//         $expiry = get_post_meta($post->ID, '_expiry_date', true);
+//         $action = get_post_meta($post->ID, '_expiry_action', true);
+
+//         $expiry_ts = cefm_get_expiry_timestamp($expiry);
+//         $expiry_display = $expiry_ts
+//             ? wp_date('Y-m-d H:i', $expiry_ts)
+//             : '';
+
+//         fputcsv($output, [
+//             $post->post_type,
+//             $expiry_display,
+//             ucfirst($action ?: '—'),
+//         ]);
+//     }
+
+//     fclose($output);
+//     exit;
+// }
 
 
 
@@ -525,6 +687,29 @@ function render_content_expiry_overview() {
     echo '</select>';
 
     echo ' <button class="button">Filter</button>';
+
+
+//     echo '<a href="' . esc_url(
+//     wp_nonce_url(
+//         admin_url('admin-post.php?action=cefm_download_csv'),
+//         'cefm_download_csv'
+//     )
+// ) . '" class="button button-secondary">⬇ Download CSV</a>';
+echo '<a href="' . esc_url(
+    wp_nonce_url(
+        add_query_arg([
+            'action'            => 'cefm_download_csv',
+            'filter_post_type'  => $filter_post_type,
+            'filter_status'     => $filter_status,
+        ], admin_url('admin-post.php')),
+        'cefm_download_csv'
+    )
+) . '" class="button button-secondary">⬇ Download CSV</a>';
+
+
+
+
+
     echo '</form><br>';
 
     // Bulk Actions Form
@@ -635,11 +820,11 @@ $expiry_display1 = wp_date('Y-m-d H:i:s', $now_ts);
     // Analytics Section
     echo '<hr><h2>📊 Content Expiry Analytics</h2>';
     echo '<p>Overview of content freshness across your site.</p>';
-    echo '<ul style="font-size:16px; line-height:1.6;">';
-    echo '<li><strong style="color:green;">Active:</strong> ' . $counts['active'] . '</li>';
-    echo '<li><strong style="color:orange;">Expiring Soon:</strong> ' . $counts['expiring'] . '</li>';
-    echo '<li><strong style="color:red;">Expired:</strong> ' . $counts['expired'] . '</li>';
-    echo '<li><strong style="color:blue;">Pending Review:</strong> ' . $counts['pending'] . '</li>';
+    echo '<ul style="font-size:16px; line-height:1.6; display:flex;">';
+    echo '<li style="margin-right:20px"><strong style="color:green;">Active:</strong> ' . $counts['active'] . '</li>';
+    echo '<li style="margin-right:20px"><strong style="color:orange;">Expiring Soon:</strong> ' . $counts['expiring'] . '</li>';
+    echo '<li style="margin-right:20px"><strong style="color:red;">Expired:</strong> ' . $counts['expired'] . '</li>';
+    echo '<li style="margin-right:20px"><strong style="color:blue;">Pending Review:</strong> ' . $counts['pending'] . '</li>';
     echo '</ul>';
 
     // Google Chart
